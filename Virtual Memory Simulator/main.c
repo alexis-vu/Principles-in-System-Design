@@ -29,10 +29,17 @@ typedef struct {
   int data;
 } MemoryEntry;
 
+typedef struct {
+  int pageNum;
+  int accesses;
+} Page;
+
 // MEMORY TABLES
 PageTableEntry pTable[NUM_PTE];     // page table
 MemoryEntry mainMem[NUM_ADDR_MM];   // main memory
 MemoryEntry disk[NUM_ADDR_DISK];    // disk memory
+Page pageList[NUM_PTE];             // page of lists
+Page* frontPage = NULL;
 
 void initialize() {
   int i;
@@ -54,11 +61,20 @@ void initialize() {
 
   // initialize disk memory
   page = 0;
+  int j = 0;
   for (i = 0; i < NUM_ADDR_DISK; ++i) {
-    disk[i].page = i % 4 == 0 ? page : page++;
+    disk[i].page = j < 3 ? page : page++;
+    j = j < 3 ? j + 1 : 0;
     disk[i].address = i;
     disk[i].data = -1;
   }
+
+  page = 0;
+  for (i = 0; i < NUM_PAGE_MM; ++i) {
+    pageList[i].pageNum = i;
+    pageList[i].accesses = 0;
+  }
+  frontPage = &pageList[0];
 }
 
 char** parse() {
@@ -102,25 +118,90 @@ void printMemory(MemoryEntry memory[], size_t size) {
   }
 }
 
+int replace(char* replacementType) {
+  int page;
+  if (strcmp(replacementType, "FIFO") == 0) {
+    page = frontPage->pageNum;
+
+    if (page == 3) {
+      frontPage = &pageList[0];
+    }
+    else {
+      ++frontPage;
+    }
+  }
+
+  if (strcmp(replacementType, "LRU") == 0) {
+    int i;
+    int minAccesses = 1000;
+    for (i = 0; i < NUM_PAGE_MM; ++i) {
+      if (pageList[i].accesses < minAccesses) {
+        page = i;
+        minAccesses = pageList[i].accesses;
+      }
+    }
+  }
+
+  return page;
+}
+
+int findPage() {
+  int i;
+  int page = -1;
+  int pages[NUM_PTE] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+  for (i = 0; i < NUM_PTE; ++i) {
+    if (pTable[i].valid == 1) {
+      pages[pTable[i].pageNum] = 1;
+    }
+  }
+
+  bool pageFound = false;
+  i = 0;
+  while (!pageFound && i < NUM_PTE) {
+    if (pages[i] == 0) {
+      pageFound = true;
+      page = i;
+    }
+
+    ++i;
+  }
+
+  return page;
+}
+
 int main(int argc, char* argv[]) {
   bool end = false;     // flag for ending shell
   char* *args = NULL;   // user input
   int i;                // counter variable
 
-  int vAddr;     // virtual address
-  int vPage;     // virtual page
-  int pAddr;     // physical address
-  int pPage;     // physical page (main mem)
-  int dPage;     // disk page
-  int dAddr;     // disk address
-  int offset;    // address offset from page start
+  int vAddr;        // virtual address
+  int vPage;        // virtual page
+  int pAddr;        // physical address
+  int pPage;        // physical page (main mem)
+  int dPage;        // disk page
+  int dAddr;        // disk address
+  int offset;       // address offset from page start
+  int data;         // data to write
+  int tempData[4];  // page data to store temporarily
 
+  // initialize depending on
   initialize();
 
   while (!end) {
     // print prompt
     printf("> ");
     args = parse();
+
+    // reset all values
+    vAddr = -1;
+    vPage = -1;
+    pAddr = -1;
+    pPage = -1;
+    dPage = -1;
+    dAddr = -1;
+    offset = -1;
+    data = -1;
 
     // continue if empty line, otherwise execute according to command
     if (args == NULL) {
@@ -137,23 +218,116 @@ int main(int argc, char* argv[]) {
         else {
           vAddr = atoi(args[1]);
           vPage = vAddr >> 2;
-          // printf("%d %d ", vAddr, vPage);
           pPage = pTable[vPage].pageNum;
-
-          // printf("%d ", pPage);
+          offset = vAddr % 4;
+          pAddr = (pPage * 4) + offset;
 
           if (pTable[vPage].valid == 0) {  // on disk
             printf("A Page Fault Has Occurred\n");
+            printf("%d\n", disk[pAddr].data);
+
+            // find next available page, if -1 then none
+            pPage = findPage();
+
+            if (pPage == -1) {
+              if (argv[1] == NULL) {
+                pPage = replace("FIFO");
+              }
+              else {
+                pPage = replace(argv[1]);
+              }
+            }
+
+            bool pageFound = false;
+            pAddr = 0;
+            while (!pageFound) {
+              if (mainMem[pAddr].page == pPage) {
+                pageFound = true;
+              }
+              else {
+                ++pAddr;
+              }
+            }
+
+            // write to physical and map to virtual
+            dPage = vPage;
+            dAddr = (dPage * 4);
+
+            for (i = 0; i < 4; ++i) {
+              tempData[i] = mainMem[pAddr + i].data;
+              mainMem[pAddr + i].data = disk[dAddr].data;
+              mainMem[pAddr + i].page = disk[dAddr].page;
+              disk[dAddr].data = tempData[i];
+            }
+
+            pTable[vPage].pageNum = pPage;
+            pTable[vPage].valid = 1;
+            pTable[vPage].dirty = 0;
           }
           else { // in main memory
-            pPage = pTable[vPage].pageNum;
-
+            printf("%d\n", mainMem[pAddr].data);
           }
+          ++pageList[pPage].accesses;
         }
-
       }
       else if (strcmp(args[0], "write") == 0) {
+        if (args[1] == NULL || args[2] == NULL) {
+          continue;
+        }
+        else {
+          vAddr = atoi(args[1]);
+          vPage = vAddr >> 2;
+          pPage = pTable[vPage].pageNum;
+          offset = vAddr % 4;
+          pAddr = (pPage * 4) + offset;
+          data = atoi(args[2]);
 
+          if (pTable[vPage].valid == 0) {  // on disk
+            printf("A Page Fault Has Occurred\n");
+
+            // find next available page, if -1 then none
+            pPage = findPage();
+
+            if (pPage == -1) {
+              if (argv[1] == NULL) {
+                pPage = replace("FIFO");
+              }
+              else {
+                pPage = replace(argv[1]);
+              }
+            }
+
+            bool pageFound = false;
+            pAddr = 0;
+            while (!pageFound) {
+              if (mainMem[pAddr].page == pPage) {
+                pageFound = true;
+              }
+              else {
+                ++pAddr;
+              }
+            }
+
+            // write to physical and map to virtual
+            dPage = vPage;
+            dAddr = (dPage * 4);
+
+            for (i = 0; i < 4; ++i) {
+              tempData[i] = mainMem[pAddr + i].data;
+              mainMem[pAddr + i].data = data;
+              mainMem[pAddr + i].page = disk[dAddr].page;
+              disk[dAddr].data = tempData[i];
+            }
+
+            pTable[vPage].pageNum = pPage;
+            pTable[vPage].valid = 1;
+          }
+          else { // in main memory
+            pTable[vPage].dirty = 1;
+            mainMem[pAddr].data = data;
+          }
+          ++pageList[pPage].accesses;
+        }
       }
       else if (strcmp(args[0], "showmain") == 0) {
         if (args[1] == NULL) {

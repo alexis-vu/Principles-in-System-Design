@@ -1,0 +1,31 @@
+malloc 126
+malloc 2
+blocklist
+free 1
+blocklist
+malloc 10
+malloc 5
+malloc 12
+blocklist
+free 1
+free 12
+blocklist
+malloc 5
+blocklist
+free 12
+blocklist
+malloc 9
+blocklist
+free 1
+blocklist
+writemem 18 refrigerator
+printmem 18 12
+printmem 17 15
+free 18
+blocklist
+free 18
+blocklist
+printmem 17 14
+writemem 11 gameover
+printmem 11 8
+quit
