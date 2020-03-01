@@ -1,5 +1,5 @@
 make:
 	gcc -g -Wall -o main main.c
 
-clean: 
+clean:
 	$(RM) main
